@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"awsume/internal/awsconfig"
+	"github.com/confused-binary/awsume/internal/awsconfig"
 )
 
 // fakeAWS simulates STS and the federation endpoint on one server.

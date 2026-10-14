@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"awsume/internal/awscreds"
+	"github.com/confused-binary/awsume/internal/awscreds"
 )
 
 var testCreds = awscreds.Credentials{

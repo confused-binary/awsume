@@ -16,7 +16,7 @@ import (
 	"strconv"
 	"strings"
 
-	"awsume/internal/awscreds"
+	"github.com/confused-binary/awsume/internal/awscreds"
 )
 
 // Session duration limits accepted by the federation endpoint for

@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strings"
 
-	"awsume/internal/arn"
+	"github.com/confused-binary/awsume/internal/arn"
 )
 
 // ResourceDestination builds a console deep link to the resource named by

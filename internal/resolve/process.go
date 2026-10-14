@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"awsume/internal/awscreds"
+	"github.com/confused-binary/awsume/internal/awscreds"
 )
 
 // processOutput is the JSON document produced by credential_process and by

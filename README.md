@@ -8,15 +8,30 @@ and picks the sign-in method that gives the longest console session.
 
 ## Install
 
-Requires Go 1.22 or newer. From a clone of this repo:
+Requires Go 1.22 or newer. No clone needed:
 
 ```
-go install .
+go install github.com/confused-binary/awsume@latest
 ```
 
 That drops `awsume` (or `awsume.exe`) into Go's bin directory, which the Go
 installer already puts on your PATH on every OS. Open a new terminal if the
-command is not found.
+command is not found. Pin a release by replacing `@latest` with a tag such
+as `@v1.0.0`.
+
+`go get` also works, but since Go 1.17 it only adds the module to the
+current project and does not build the binary, so `go install` is the
+supported form:
+
+```
+go get github.com/confused-binary/awsume
+```
+
+From a clone of this repo instead:
+
+```
+go install .
+```
 
 For a machine without Go, build all targets elsewhere and copy the right file
 from `dist/` onto that machine's PATH:

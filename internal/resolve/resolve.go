@@ -18,10 +18,10 @@ import (
 	"strings"
 	"time"
 
-	"awsume/internal/awsconfig"
-	"awsume/internal/awscreds"
-	"awsume/internal/endpoints"
-	"awsume/internal/sts"
+	"github.com/confused-binary/awsume/internal/awsconfig"
+	"github.com/confused-binary/awsume/internal/awscreds"
+	"github.com/confused-binary/awsume/internal/endpoints"
+	"github.com/confused-binary/awsume/internal/sts"
 )
 
 // Mode selects how credentials are resolved.

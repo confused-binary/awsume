@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"awsume/internal/awscreds"
-	"awsume/internal/endpoints"
+	"github.com/confused-binary/awsume/internal/awscreds"
+	"github.com/confused-binary/awsume/internal/endpoints"
 )
 
 // ssoCache mirrors the JSON written by "aws sso login" into

@@ -3,7 +3,7 @@ package console
 import (
 	"testing"
 
-	"awsume/internal/arn"
+	"github.com/confused-binary/awsume/internal/arn"
 )
 
 func TestResourceDestination(t *testing.T) {

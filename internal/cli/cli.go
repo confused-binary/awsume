@@ -14,16 +14,16 @@ import (
 	"strings"
 	"time"
 
-	"awsume/internal/arn"
-	"awsume/internal/awsconfig"
-	"awsume/internal/browser"
-	"awsume/internal/clipboard"
-	"awsume/internal/console"
-	"awsume/internal/endpoints"
-	"awsume/internal/federation"
-	"awsume/internal/resolve"
-	"awsume/internal/signin"
-	"awsume/internal/sts"
+	"github.com/confused-binary/awsume/internal/arn"
+	"github.com/confused-binary/awsume/internal/awsconfig"
+	"github.com/confused-binary/awsume/internal/browser"
+	"github.com/confused-binary/awsume/internal/clipboard"
+	"github.com/confused-binary/awsume/internal/console"
+	"github.com/confused-binary/awsume/internal/endpoints"
+	"github.com/confused-binary/awsume/internal/federation"
+	"github.com/confused-binary/awsume/internal/resolve"
+	"github.com/confused-binary/awsume/internal/signin"
+	"github.com/confused-binary/awsume/internal/sts"
 )
 
 // Exit codes.
@@ -406,7 +406,7 @@ func newApp(o Options, f *flags) (*app, error) {
 		Logf:        logf,
 		Mode:        mode,
 		LookPath:    o.LookPath,
-		UserAgent:   "awsume/" + versionString(o.Version),
+		UserAgent:   "github.com/confused-binary/awsume/" + versionString(o.Version),
 		SSOCacheDir: o.SSOCacheDir,
 	}
 	return a, nil
@@ -534,7 +534,7 @@ func (a *app) generate(ctx context.Context, name string) (*record, error) {
 	stsEndpoint, signingRegion := er.STS()
 	stsClient := sts.New(stsEndpoint, signingRegion, a.o.HTTP)
 	stsClient.Now = a.o.Now
-	stsClient.UserAgent = "awsume/" + versionString(a.o.Version)
+	stsClient.UserAgent = "github.com/confused-binary/awsume/" + versionString(a.o.Version)
 	fed := federation.New(er.Signin(), a.o.HTTP)
 	fed.UserAgent = stsClient.UserAgent
 

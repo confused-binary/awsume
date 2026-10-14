@@ -34,9 +34,9 @@ import (
 	"strings"
 	"time"
 
-	"awsume/internal/awscreds"
-	"awsume/internal/federation"
-	"awsume/internal/sts"
+	"github.com/confused-binary/awsume/internal/awscreds"
+	"github.com/confused-binary/awsume/internal/federation"
+	"github.com/confused-binary/awsume/internal/sts"
 )
 
 // Method names.
