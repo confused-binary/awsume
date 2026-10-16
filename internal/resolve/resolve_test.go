@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confused-binary/awsume/internal/awsconfig"
-	"github.com/confused-binary/awsume/internal/endpoints"
+	"awsume/internal/awsconfig"
+	"awsume/internal/endpoints"
 )
 
 func TestMain(m *testing.M) {

@@ -24,6 +24,36 @@ Output:
   -j, -json                  Print a JSON record per profile instead of a bare URL
   -v, -verbose               Explain every step and attempt on stderr
 
+Browser session (one profile only):
+  -ab, -auto-browser <name>  Open the console in chrome or firefox through chromedriver or
+                             geckodriver and keep the session refreshed: a fresh sign-in is
+                             applied inside the open console tab, with no new tab or window,
+                             until the browser is closed or awsume is interrupted
+      -refresh <duration>    How often the session is refreshed (default 15m, minimum 1m)
+      -chromedriver <path>   chromedriver executable (default: search PATH)
+      -geckodriver <path>    geckodriver executable (default: search PATH)
+      -browser-binary <path> Browser executable (default: the driver's choice)
+      -no-daemon             Keep the browser session in this process even when the daemon runs
+
+Daemon (keeps browser sessions out of the terminal):
+      -daemon start          Start the daemon in the background; from then on -auto-browser hands
+                             its browser to the daemon and returns at once
+      -daemon stop           Stop the daemon and close the browsers it keeps open
+      -daemon status         List the daemon's browser sessions (-json for a record)
+      -daemon install        Install the daemon as a per-user login service (systemd user unit,
+                             launchd agent or Startup folder entry) and start it
+      -daemon uninstall      Stop and remove that service
+      -daemon run            Run the daemon in the foreground (what the service runs)
+                             Socket: $AWSUME_DAEMON_SOCKET, $XDG_RUNTIME_DIR/awsume/daemon.sock or
+                             ~/.cache/awsume/daemon.sock; log of a started daemon: ~/.cache/awsume/daemon.log
+
+Proxy:
+      -proxy <url>           Send every connection through this proxy: http://host:port,
+                             https://host:port or socks5://host:port (a bare host:port means
+                             http). Applies to STS, sign-in and Identity Center calls, to the
+                             aws CLI and credential_process subprocesses and to -auto-browser
+  -k, -insecure              Skip TLS certificate verification, for intercepting proxies
+
 Credentials and session:
   -p, -profile <name>        AWS CLI profile to use
       -config-file <path>    AWS config file (default AWS_CONFIG_FILE, AWS_SHARED_CONFIG_FILE, ~/.aws/config)
@@ -54,6 +84,8 @@ Endpoints:
 Other:
       -timeout <duration>    Overall timeout (default 2m)
       -no-stdin              Never read profile names from stdin
+      -completion <shell>    Print a tab completion script for bash, zsh, fish or powershell;
+                             it completes profile names from the config/credentials files in use
       -list-profiles         List configured profiles and exit
       -list-services         List known -service names and exit
   -V, -version               Print the version and exit
@@ -72,4 +104,7 @@ Examples:
   aws configure list-profiles | awsume -json
   awsume -role-arn arn:aws:iam::123456789012:role/Admin -p base
   awsume -p prod -arn arn:aws:ec2:us-east-1:123456789012:instance/i-0123456789abcdef0 -o
+  awsume -p prod -ab firefox
+  awsume -p prod -ab chrome -proxy 127.0.0.1:8080 -k
+  awsume -daemon start && awsume -p prod -ab chrome
 `

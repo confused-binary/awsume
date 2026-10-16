@@ -8,30 +8,15 @@ and picks the sign-in method that gives the longest console session.
 
 ## Install
 
-Requires Go 1.22 or newer. No clone needed:
-
-```
-go install github.com/confused-binary/awsume@latest
-```
-
-That drops `awsume` (or `awsume.exe`) into Go's bin directory, which the Go
-installer already puts on your PATH on every OS. Open a new terminal if the
-command is not found. Pin a release by replacing `@latest` with a tag such
-as `@v1.0.0`.
-
-`go get` also works, but since Go 1.17 it only adds the module to the
-current project and does not build the binary, so `go install` is the
-supported form:
-
-```
-go get github.com/confused-binary/awsume
-```
-
-From a clone of this repo instead:
+Requires Go 1.22 or newer. From a clone of this repo:
 
 ```
 go install .
 ```
+
+That drops `awsume` (or `awsume.exe`) into Go's bin directory, which the Go
+installer already puts on your PATH on every OS. Open a new terminal if the
+command is not found.
 
 For a machine without Go, build all targets elsewhere and copy the right file
 from `dist/` onto that machine's PATH:
@@ -42,6 +27,9 @@ make cross
 
 On Linux, `-clipboard` needs `wl-copy`, `xclip` or `xsel` and `-open` needs
 `xdg-open`. The `aws configure export-credentials` fallback needs AWS CLI v2.
+`-auto-browser` needs ***chromedriver*** for Chrome or ***geckodriver*** for
+Firefox on the PATH (or `-chromedriver` / `-geckodriver` pointing at them),
+the same drivers ***waf-fu*** uses.
 
 ## Usage
 
@@ -79,6 +67,33 @@ awsume -p base -role-arn arn:aws:iam::123456789012:role/Admin -external-id abc12
 awsume -p base -role-arn arn:aws:iam::123456789012:role/Admin -mfa-serial arn:aws:iam::123456789012:mfa/me -mfa-token 123456
 ```
 
+Open the console in a browser that awsume controls and keep the session
+alive for as long as that browser is open:
+
+```
+awsume -p prod -ab firefox
+
+awsume -p prod -ab chrome -s iam -refresh 10m
+```
+
+Keep those browsers in a background daemon instead, so the command returns
+at once and the terminal stays free (`-daemon install` makes it a login
+service):
+
+```
+awsume -daemon start
+
+awsume -p prod -ab chrome
+```
+
+Send everything through a proxy, including the browser:
+
+```
+awsume -p prod -proxy 127.0.0.1:8080 -k -ab chrome
+
+awsume -p prod -proxy socks5://127.0.0.1:1080
+```
+
 Use config and credentials files from somewhere else, for example ones
 recovered during an engagement. Only the named files are read:
 
@@ -102,6 +117,34 @@ credentials.
 `awsume -h` lists every flag. `-list-profiles` and `-list-services` show
 what is configured and which `-service` names are known.
 
+## Tab completion
+
+`-completion` prints a completion script for bash, zsh, fish or PowerShell.
+To install it, add the matching line to your shell's startup file
+(`~/.bashrc`, `~/.zshrc`, `~/.config/fish/config.fish` or your PowerShell
+`$PROFILE`) and open a new shell. Running the line directly loads it for the
+current shell only:
+
+```
+source <(awsume -completion bash)
+
+source <(awsume -completion zsh)
+
+awsume -completion fish | source
+
+awsume -completion powershell | Out-String | Invoke-Expression
+```
+
+The zsh script is the one to use in zsh. If your `~/.zshrc` loads bash
+completions through `bashcompinit`, the bash script works there as well.
+
+Profile names come from the same files the command would use: the
+`-config-file` and `-credentials-file` already typed on the line, otherwise
+`AWS_CONFIG_FILE` / `AWS_SHARED_CREDENTIALS_FILE`, otherwise `~/.aws`. Flag
+names, `-service`, `-partition`, `-resolver`, `-methods` and `-auto-browser`
+values are completed too, and the file and executable flags fall back to
+path completion.
+
 ## What it handles
 
 Credential sources, resolved natively with the same rules as the AWS CLI:
@@ -120,7 +163,130 @@ Credential sources, resolved natively with the same rules as the AWS CLI:
 
 Partitions: commercial, GovCloud and China, inferred from the region, the
 identity or the ARN. Every STS, sign-in, console and Identity Center endpoint
-can be overridden by flag. Proxies come from `HTTPS_PROXY`.
+can be overridden by flag.
+
+## Proxy
+
+`-proxy` takes `http://host:port`, `https://host:port` or
+`socks5://host:port`; a bare `host:port` means HTTP. Everything goes through
+it: the STS, sign-in and Identity Center calls awsume makes itself, the
+`aws configure export-credentials` and `credential_process` subprocesses
+(through `HTTPS_PROXY` and friends in their environment) and the browser
+started by `-auto-browser`. `-k` / `-insecure` turns off TLS certificate
+verification for awsume and the browser, which an intercepting proxy such as
+***Burp*** needs unless its CA is trusted. Proxy credentials in the URL work
+for awsume's own calls but cannot be handed to a browser.
+
+Without `-proxy` the usual `HTTPS_PROXY` environment applies to awsume's own
+calls only.
+
+## Browser session
+
+`-ab` / `-auto-browser chrome|firefox` opens the sign-in URL in a browser
+started through ***chromedriver*** or ***geckodriver***, the way
+***waf-fu*** replays requests, and then stays in the foreground. The browser
+runs with awsume's own profile, kept under `~/.cache/awsume/browser/` (or
+`XDG_CACHE_HOME`), so nothing from your daily browser leaks into the
+engagement and vice versa, while the console still remembers client-side
+preferences between runs: dismiss the navigation tour once and it stays
+dismissed. When that profile is already open in another awsume browser, the
+new one gets a throwaway profile instead. The URL is still printed (or
+copied with `-c`).
+
+Every 15 minutes (`-refresh`) awsume resolves the credentials again, builds
+a new sign-in URL and applies it to the browser from inside the open console
+tab, so the console cookies are replaced without a new tab or window. It
+tries the quietest mechanism first and checks after each one whether the
+console cookies actually changed:
+
+1. a background `fetch` of the sign-in URL from the console page, which
+   follows the sign-in redirects and stores their cookies;
+2. a hidden iframe, a real navigation that also runs any HTML or script
+   step of the sign-in flow;
+3. with Chrome, a DevTools target that loads the URL in the background
+   without taking focus and is closed once the console is reached;
+4. a new tab that is closed again as soon as the sign-in has landed.
+
+Steps 3 and 4 only run when the earlier ones fail, and step 4 also when no
+console tab is open at all; `-v` shows which step was used and why the
+earlier ones did not work. A failed refresh is reported on stderr and
+retried a minute later. When a session would expire before the next
+refresh, the refresh is brought forward.
+
+Role sessions keep the fixed session name `awsume` (or `-session-name`) so
+the console sees the same identity on every refresh.
+
+Closing the browser ends awsume. Ctrl-C ends awsume and closes the
+browser, because the browser belongs to the driver session. One profile at
+a time: `-auto-browser` refuses multiple profiles.
+
+`-chromedriver`, `-geckodriver` and `-browser-binary` point at executables
+when the automatic search (PATH, then the usual install directories) picks
+the wrong one.
+
+### Daemon
+
+Run in the foreground, `-auto-browser` occupies the terminal for as long as
+the browser is open. The daemon takes that job over: one long-running
+awsume owns every browser, and each `-auto-browser` command just hands its
+session to it and returns.
+
+```
+awsume -daemon start
+
+awsume -p prod -ab chrome
+
+awsume -p staging -ab firefox -s iam
+
+awsume -daemon status
+
+awsume -daemon stop
+```
+
+`-daemon start` launches `awsume -daemon run` detached from the terminal,
+logging to `~/.cache/awsume/daemon.log` (or `XDG_CACHE_HOME`). While it is
+running, every `-auto-browser` command resolves the credentials and builds
+the first sign-in URL itself, so MFA prompts, `aws sso login` hints and
+error messages still appear in your terminal and the URL is still printed
+(or copied with `-c`), and then passes the command line and environment to
+the daemon over a Unix socket that only your user can reach. The daemon
+starts the browser, loads the URL and refreshes the session from then on
+exactly as the foreground mode would, using the same files, proxy and
+driver flags, and your `PATH` and display variables, so it also works when
+the daemon was started by a login service with a bare environment.
+
+`-daemon status` lists the sessions with how long each has been open, how
+many refreshes it has had and the last thing it reported; `-json` prints
+the same as a record. `-daemon stop` closes every browser and ends the
+daemon. Closing a browser ends just that session. `-no-daemon` keeps a
+session in the foreground even when the daemon is running.
+
+Refreshes inside the daemon cannot prompt: a role that needs a fresh MFA
+code on every `sts:AssumeRole` only refreshes for as long as the first
+code's session lasts, after which the daemon reports the failure in its log
+and `-daemon status` and retries every minute; an expired Identity Center
+token recovers on its own once you run `aws sso login` again.
+
+The daemon can be installed as a per-user login service, which is the only
+kind that can put a browser on your desktop:
+
+```
+awsume -daemon install
+
+awsume -daemon uninstall
+```
+
+On Linux that writes a systemd user unit (`~/.config/systemd/user/awsume.service`)
+and enables it with `systemctl --user enable --now`; its output is in
+`journalctl --user -u awsume`. On macOS it writes a launchd agent
+(`~/Library/LaunchAgents/com.awsume.daemon.plist`) and loads it with
+`launchctl bootstrap`, logging to `~/.cache/awsume/daemon.log`. On Windows
+it drops a script into the Startup folder that runs the daemon hidden at
+logon, logging to `%LOCALAPPDATA%\awsume\daemon.log`, and starts it right
+away. The socket path is baked into the service so clients and daemon
+always agree; set `AWSUME_DAEMON_SOCKET` before installing to put it
+somewhere else. `-daemon run` runs the daemon in the foreground for a
+service manager of your own.
 
 ## How the URL is produced
 

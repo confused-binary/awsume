@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/confused-binary/awsume/internal/awscreds"
+	"awsume/internal/awscreds"
 )
 
 const (

@@ -5,12 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
 	"time"
 
-	"github.com/confused-binary/awsume/internal/awscreds"
+	"awsume/internal/awscreds"
 )
 
 // processOutput is the JSON document produced by credential_process and by
@@ -56,17 +57,25 @@ func parseProcessOutput(data []byte, source string) (awscreds.Credentials, error
 
 // runShell executes a command line through the platform shell, the way the
 // AWS CLI runs credential_process.
-func runShell(ctx context.Context, command string) ([]byte, error) {
+func runShell(ctx context.Context, command string, base, env []string) ([]byte, error) {
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
 		cmd = exec.CommandContext(ctx, "cmd", "/c", command)
 	} else {
 		cmd = exec.CommandContext(ctx, "sh", "-c", command)
 	}
-	return runCmd(cmd)
+	return runCmd(cmd, base, env)
 }
 
-func runCmd(cmd *exec.Cmd) ([]byte, error) {
+// runCmd runs cmd with extra environment variables appended to base (the
+// current environment when base is nil).
+func runCmd(cmd *exec.Cmd, base, env []string) ([]byte, error) {
+	if base != nil || len(env) > 0 {
+		if base == nil {
+			base = os.Environ()
+		}
+		cmd.Env = append(append([]string(nil), base...), env...)
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -86,7 +95,7 @@ func runCmd(cmd *exec.Cmd) ([]byte, error) {
 func (r *Resolver) processProfile(ctx context.Context, res *Result) (*Result, error) {
 	command := res.Profile.Get("credential_process")
 	r.logf("running credential_process for profile %q", res.ProfileName)
-	out, err := runShell(ctx, command)
+	out, err := runShell(ctx, command, r.Environ, r.SubprocessEnv)
 	if err != nil {
 		return nil, fmt.Errorf("profile %q: credential_process: %w", res.ProfileName, err)
 	}
@@ -111,7 +120,7 @@ func (r *Resolver) viaAWSCLI(ctx context.Context, profile string) (*Result, erro
 	}
 	r.logf("running %s %s", path, strings.Join(args, " "))
 	cmd := exec.CommandContext(ctx, path, args...)
-	out, err := runCmd(cmd)
+	out, err := runCmd(cmd, r.Environ, r.SubprocessEnv)
 	if err != nil {
 		msg := err.Error()
 		if strings.Contains(msg, "Invalid choice") || strings.Contains(msg, "usage: aws") {

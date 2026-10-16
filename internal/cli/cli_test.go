@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,10 +13,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/confused-binary/awsume/internal/awsconfig"
+	"awsume/internal/awsconfig"
+	"awsume/internal/daemon"
+	"awsume/internal/webdriver"
 )
 
 // fakeAWS simulates STS and the federation endpoint on one server.
@@ -104,11 +108,34 @@ type harness struct {
 	copyErr error
 
 	ssoCacheDir string
+	startDriver func(ctx context.Context, cfg webdriver.Config) (BrowserDriver, error)
+	// -daemon start/install fakes.
+	detach      func(exe string, args []string, logPath string) (int, error)
+	runCommand  func(name string, args ...string) error
+	lookPath    func(string) (string, error)
+	serviceGOOS string
+	// clock is the fake time; the -auto-browser loop advances it instead
+	// of sleeping. clockMu guards it between the daemon's goroutines and
+	// the test.
+	clock   time.Time
+	clockMu sync.Mutex
+}
+
+func (h *harness) now() time.Time {
+	h.clockMu.Lock()
+	defer h.clockMu.Unlock()
+	return h.clock
+}
+
+func (h *harness) advance(d time.Duration) {
+	h.clockMu.Lock()
+	defer h.clockMu.Unlock()
+	h.clock = h.clock.Add(d)
 }
 
 func newHarness(t *testing.T, config, credentials string) *harness {
 	t.Helper()
-	h := &harness{aws: &fakeAWS{t: t, identityARN: "arn:aws:iam::123456789012:user/alice"}, env: map[string]string{}}
+	h := &harness{aws: &fakeAWS{t: t, identityARN: "arn:aws:iam::123456789012:user/alice"}, env: map[string]string{}, clock: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
 	h.srv = httptest.NewServer(http.HandlerFunc(h.aws.handler))
 	t.Cleanup(h.srv.Close)
 	cfgFile, err := awsconfig.Parse(strings.NewReader(config))
@@ -120,6 +147,9 @@ func newHarness(t *testing.T, config, credentials string) *harness {
 		t.Fatal(err)
 	}
 	h.cfg = awsconfig.New(cfgFile, credFile)
+	h.lookPath = func(string) (string, error) { return "", errors.New("not found") }
+	h.detach = func(string, []string, string) (int, error) { return 0, errors.New("detach not expected") }
+	h.runCommand = func(name string, args ...string) error { return errors.New("command not expected: " + name) }
 	return h
 }
 
@@ -134,9 +164,14 @@ func (h *harness) run(args ...string) int {
 		Stdout:          &h.stdout,
 		Stderr:          &h.stderr,
 		Env:             func(k string) string { return h.env[k] },
+		Environ:         func() []string { return daemon.EnvList(h.env) },
 		Version:         "test",
 		HTTP:            h.srv.Client(),
-		LookPath:        func(string) (string, error) { return "", errors.New("not found") },
+		LookPath:        h.lookPath,
+		Executable:      func() (string, error) { return "/opt/awsume", nil },
+		Detach:          h.detach,
+		RunCommand:      h.runCommand,
+		serviceGOOS:     h.serviceGOOS,
 		Clipboard: func(s string) error {
 			h.copied = append(h.copied, s)
 			return h.copyErr
@@ -145,9 +180,15 @@ func (h *harness) run(args ...string) int {
 			h.opened = append(h.opened, u)
 			return nil
 		},
-		Now:         func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) },
+		Now:         h.now,
 		LoadConfig:  func(string, string) (*awsconfig.Config, error) { return h.cfg, nil },
 		SSOCacheDir: h.ssoCacheDir,
+		StartDriver: h.startDriver,
+		browserPoll: time.Minute,
+		browserSleep: func(ctx context.Context, d time.Duration) error {
+			h.advance(d)
+			return ctx.Err()
+		},
 	})
 }
 

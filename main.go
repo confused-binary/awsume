@@ -6,7 +6,7 @@ package main
 import (
 	"os"
 
-	"github.com/confused-binary/awsume/internal/cli"
+	"awsume/internal/cli"
 )
 
 // version is set at build time with -ldflags "-X main.version=1.2.3".

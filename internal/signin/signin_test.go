@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confused-binary/awsume/internal/awscreds"
-	"github.com/confused-binary/awsume/internal/sts"
+	"awsume/internal/awscreds"
+	"awsume/internal/sts"
 )
 
 type fakeSTS struct {

@@ -10,20 +10,29 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"os"
 	"os/exec"
+	"os/signal"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
-	"github.com/confused-binary/awsume/internal/arn"
-	"github.com/confused-binary/awsume/internal/awsconfig"
-	"github.com/confused-binary/awsume/internal/browser"
-	"github.com/confused-binary/awsume/internal/clipboard"
-	"github.com/confused-binary/awsume/internal/console"
-	"github.com/confused-binary/awsume/internal/endpoints"
-	"github.com/confused-binary/awsume/internal/federation"
-	"github.com/confused-binary/awsume/internal/resolve"
-	"github.com/confused-binary/awsume/internal/signin"
-	"github.com/confused-binary/awsume/internal/sts"
+	"awsume/internal/arn"
+	"awsume/internal/autobrowser"
+	"awsume/internal/awsconfig"
+	"awsume/internal/browser"
+	"awsume/internal/clipboard"
+	"awsume/internal/console"
+	"awsume/internal/daemon"
+	"awsume/internal/endpoints"
+	"awsume/internal/federation"
+	"awsume/internal/proxy"
+	"awsume/internal/resolve"
+	"awsume/internal/signin"
+	"awsume/internal/sts"
+	"awsume/internal/webdriver"
 )
 
 // Exit codes.
@@ -42,7 +51,10 @@ type Options struct {
 	Stdout          io.Writer
 	Stderr          io.Writer
 	Env             func(string) string
-	Version         string
+	// Environ lists the whole environment, for handing a browser session
+	// to the daemon; nil uses os.Environ.
+	Environ func() []string
+	Version string
 
 	// HTTP overrides the HTTP client used for every API call.
 	HTTP *http.Client
@@ -59,6 +71,53 @@ type Options struct {
 	LoadConfig func(configPath, credentialsPath string) (*awsconfig.Config, error)
 	// SSOCacheDir overrides the IAM Identity Center token cache directory.
 	SSOCacheDir string
+	// StartDriver overrides how the -auto-browser browser is launched.
+	StartDriver func(ctx context.Context, cfg webdriver.Config) (BrowserDriver, error)
+	// Executable overrides the path of this program (-daemon start/install).
+	Executable func() (string, error)
+	// Detach overrides how the daemon is started in the background.
+	Detach func(exe string, args []string, logPath string) (int, error)
+	// RunCommand overrides how systemctl/launchctl are run by -daemon
+	// install and uninstall.
+	RunCommand func(name string, args ...string) error
+
+	// browserPoll and browserSleep let tests run the -auto-browser loop
+	// without waiting.
+	browserPoll  time.Duration
+	browserSleep func(ctx context.Context, d time.Duration) error
+	// environ, when set, is the environment of the client whose browser
+	// session the daemon is running; it is given to the driver and to
+	// credential subprocesses instead of the daemon's own.
+	environ []string
+	// defaultLookPath records that LookPath was not overridden, so the
+	// daemon may replace it with one that searches the client's PATH.
+	defaultLookPath bool
+	// serviceGOOS overrides the platform -daemon install acts for.
+	serviceGOOS string
+}
+
+// BrowserDriver is a browser session that can be driven and closed.
+type BrowserDriver interface {
+	autobrowser.Driver
+	Quit() error
+}
+
+func startDriver(ctx context.Context, cfg webdriver.Config) (BrowserDriver, error) {
+	return webdriver.Start(ctx, cfg)
+}
+
+// browserProfileDir is where the -auto-browser profile for browser is kept
+// between runs, so the console remembers client-side preferences such as a
+// dismissed navigation tour. It lives under awsume's cache directory (see
+// daemon.CacheDir) and is never shared with the daily browser. Empty when no
+// cache directory can be determined; the browser then gets a throwaway
+// profile.
+func browserProfileDir(browser string, env func(string) string) string {
+	base := daemon.CacheDir(env)
+	if base == "" {
+		return ""
+	}
+	return filepath.Join(base, "browser", browser)
 }
 
 type flags struct {
@@ -76,6 +135,7 @@ type flags struct {
 	version         bool
 	listProfiles    bool
 	listServices    bool
+	completion      string
 
 	roleARN      string
 	externalID   string
@@ -100,6 +160,16 @@ type flags struct {
 	timeout         time.Duration
 	noIdentityCheck bool
 	noStdin         bool
+
+	proxy         string
+	insecure      bool
+	autoBrowser   string
+	refresh       time.Duration
+	chromedriver  string
+	geckodriver   string
+	browserBinary string
+	daemon        string
+	noDaemon      bool
 }
 
 // record is the JSON output document.
@@ -117,6 +187,11 @@ type record struct {
 	IdentityKind           string `json:"identity_kind"`
 	CredentialSource       string `json:"credential_source,omitempty"`
 	Warning                string `json:"warning,omitempty"`
+
+	// expires is Expires as a time; hosts are the sign-in and console
+	// hosts involved, for -auto-browser.
+	expires time.Time
+	hosts   []string
 }
 
 func newFlagSet(f *flags, stderr io.Writer) *flag.FlagSet {
@@ -151,6 +226,7 @@ func newFlagSet(f *flags, stderr io.Writer) *flag.FlagSet {
 	boolean(&f.version, "version", "V")
 	boolean(&f.listProfiles, "list-profiles", "")
 	boolean(&f.listServices, "list-services", "")
+	str(&f.completion, "completion", "", "")
 
 	str(&f.roleARN, "role-arn", "", "")
 	str(&f.externalID, "external-id", "", "")
@@ -175,6 +251,16 @@ func newFlagSet(f *flags, stderr io.Writer) *flag.FlagSet {
 	fs.DurationVar(&f.timeout, "timeout", 2*time.Minute, "")
 	boolean(&f.noIdentityCheck, "no-identity-check", "")
 	boolean(&f.noStdin, "no-stdin", "")
+
+	str(&f.proxy, "proxy", "", "")
+	boolean(&f.insecure, "insecure", "k")
+	str(&f.autoBrowser, "auto-browser", "ab", "")
+	fs.DurationVar(&f.refresh, "refresh", 15*time.Minute, "")
+	str(&f.chromedriver, "chromedriver", "", "")
+	str(&f.geckodriver, "geckodriver", "", "")
+	str(&f.browserBinary, "browser-binary", "", "")
+	str(&f.daemon, "daemon", "", "")
+	boolean(&f.noDaemon, "no-daemon", "")
 	return fs
 }
 
@@ -212,8 +298,12 @@ func Run(o Options) int {
 	if o.HTTP == nil {
 		o.HTTP = &http.Client{Timeout: 30 * time.Second}
 	}
+	if o.Environ == nil {
+		o.Environ = os.Environ
+	}
 	if o.LookPath == nil {
 		o.LookPath = exec.LookPath
+		o.defaultLookPath = true
 	}
 	if o.Clipboard == nil {
 		o.Clipboard = clipboard.Copy
@@ -223,6 +313,22 @@ func Run(o Options) int {
 	}
 	if o.LoadConfig == nil {
 		o.LoadConfig = awsconfig.LoadFiles
+	}
+	if o.StartDriver == nil {
+		o.StartDriver = startDriver
+	}
+	if o.Executable == nil {
+		o.Executable = os.Executable
+	}
+	if o.Detach == nil {
+		o.Detach = daemon.Detach
+	}
+	if o.RunCommand == nil {
+		o.RunCommand = runCommand
+	}
+
+	if len(o.Args) > 0 && o.Args[0] == completeCommand {
+		return complete(o, o.Args[1:])
 	}
 
 	var f flags
@@ -244,6 +350,19 @@ func Run(o Options) int {
 		}
 		return ExitOK
 	}
+	if f.completion != "" {
+		script, err := completionScript(f.completion)
+		if err != nil {
+			fmt.Fprintf(o.Stderr, "awsume: %v\n", err)
+			return ExitUsage
+		}
+		fmt.Fprint(o.Stdout, script)
+		return ExitOK
+	}
+
+	if f.daemon != "" {
+		return daemonCommand(o, &f)
+	}
 
 	app, err := newApp(o, &f)
 	if err != nil {
@@ -261,6 +380,18 @@ func Run(o Options) int {
 	if err != nil {
 		fmt.Fprintf(o.Stderr, "awsume: %v\n", err)
 		return ExitError
+	}
+	if app.browser != "" {
+		if len(profiles) != 1 {
+			fmt.Fprintf(o.Stderr, "awsume: -auto-browser works with exactly one profile, got %d\n", len(profiles))
+			return ExitUsage
+		}
+		// A running daemon takes the session over, so this process can
+		// exit and the terminal stays free.
+		if sock := daemon.SocketPath(o.Env); !f.noDaemon && sock != "" && daemon.Running(sock) {
+			return app.handOff(profiles[0], sock)
+		}
+		return app.autoBrowser(profiles[0])
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), f.timeout)
@@ -322,6 +453,10 @@ type app struct {
 	methods  []string
 	// resource is the parsed -arn value, if any.
 	resource *arn.ARN
+	// proxy is the parsed -proxy value, if any.
+	proxy *proxy.Proxy
+	// browser is the normalised -auto-browser value, if any.
+	browser string
 }
 
 func newApp(o Options, f *flags) (*app, error) {
@@ -348,6 +483,34 @@ func newApp(o Options, f *flags) (*app, error) {
 	}
 	if f.policy != "" && !json.Valid([]byte(f.policy)) {
 		return nil, errors.New("-policy must be a JSON policy document")
+	}
+	px, err := proxy.Parse(f.proxy)
+	if err != nil {
+		return nil, err
+	}
+	if px != nil || f.insecure {
+		// Every API call, including the ones the resolver makes, goes
+		// through the proxy.
+		o.HTTP = proxy.Client(px, f.insecure, 30*time.Second)
+		if px != nil {
+			logf("proxy %s", px)
+		}
+	}
+	var browserName, defaultSessionName string
+	if f.autoBrowser != "" {
+		browserName, err = webdriver.NormalizeBrowser(f.autoBrowser)
+		if err != nil {
+			return nil, fmt.Errorf("-auto-browser: %w", err)
+		}
+		if f.refresh < time.Minute {
+			return nil, errors.New("-refresh must be at least 1m")
+		}
+		// Keep the identity stable across refreshes so the console does
+		// not see a different session name every quarter hour.
+		if f.sessionName == "" {
+			f.sessionName = "awsume"
+		}
+		defaultSessionName = f.sessionName
 	}
 	var resource *arn.ARN
 	if f.arn != "" {
@@ -394,20 +557,23 @@ func newApp(o Options, f *flags) (*app, error) {
 		SSOPortal: f.ssoEndpoint,
 		SSOOIDC:   f.ssoOIDCEndpoint,
 	}
-	a := &app{o: o, f: f, config: cfg, logf: logf, methods: methods, resource: resource}
+	a := &app{o: o, f: f, config: cfg, logf: logf, methods: methods, resource: resource, proxy: px, browser: browserName}
 	a.resolver = &resolve.Resolver{
-		Config:      cfg,
-		Env:         o.Env,
-		HTTP:        o.HTTP,
-		Endpoints:   overrides,
-		Partition:   f.partition,
-		MFAToken:    a.mfaToken,
-		Now:         o.Now,
-		Logf:        logf,
-		Mode:        mode,
-		LookPath:    o.LookPath,
-		UserAgent:   "github.com/confused-binary/awsume/" + versionString(o.Version),
-		SSOCacheDir: o.SSOCacheDir,
+		Config:             cfg,
+		Env:                o.Env,
+		HTTP:               o.HTTP,
+		Endpoints:          overrides,
+		Partition:          f.partition,
+		MFAToken:           a.mfaToken,
+		Now:                o.Now,
+		Logf:               logf,
+		Mode:               mode,
+		LookPath:           o.LookPath,
+		UserAgent:          "awsume/" + versionString(o.Version),
+		SSOCacheDir:        o.SSOCacheDir,
+		SubprocessEnv:      proxy.Env(px),
+		Environ:            o.environ,
+		DefaultSessionName: defaultSessionName,
 	}
 	return a, nil
 }
@@ -534,7 +700,7 @@ func (a *app) generate(ctx context.Context, name string) (*record, error) {
 	stsEndpoint, signingRegion := er.STS()
 	stsClient := sts.New(stsEndpoint, signingRegion, a.o.HTTP)
 	stsClient.Now = a.o.Now
-	stsClient.UserAgent = "github.com/confused-binary/awsume/" + versionString(a.o.Version)
+	stsClient.UserAgent = "awsume/" + versionString(a.o.Version)
 	fed := federation.New(er.Signin(), a.o.HTTP)
 	fed.UserAgent = stsClient.UserAgent
 
@@ -604,7 +770,9 @@ func (a *app) generate(ctx context.Context, name string) (*record, error) {
 	}
 	if !result.Expires.IsZero() {
 		rec.Expires = result.Expires.UTC().Format(time.RFC3339)
+		rec.expires = result.Expires
 	}
+	rec.hosts = hostsOf(er.Signin(), er.Console(), destination, result.URL)
 	if result.Method == signin.MethodSSOPortal && warning == "" {
 		rec.Warning = "access portal link requires an active IAM Identity Center session in the browser"
 	}
@@ -641,4 +809,158 @@ func contains(list []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// hostsOf returns the host names of the given URLs, without duplicates.
+func hostsOf(urls ...string) []string {
+	var hosts []string
+	seen := map[string]bool{}
+	for _, raw := range urls {
+		u, err := url.Parse(raw)
+		if err != nil || u.Hostname() == "" || seen[u.Hostname()] {
+			continue
+		}
+		seen[u.Hostname()] = true
+		hosts = append(hosts, u.Hostname())
+	}
+	return hosts
+}
+
+// firstLogin generates the URL for name and delivers it the way the plain
+// command would (print, clipboard, open). It returns the record and an
+// exit code; the record is nil when generation failed.
+func (a *app) firstLogin(name string) (*record, int) {
+	o, f := a.o, a.f
+	ctx, cancel := context.WithTimeout(context.Background(), f.timeout)
+	rec, err := a.generate(ctx, name)
+	cancel()
+	if err != nil {
+		fmt.Fprintf(o.Stderr, "awsume: %s: %v\n", displayName(name, ""), err)
+		return nil, ExitError
+	}
+	if rec.Warning != "" {
+		fmt.Fprintf(o.Stderr, "awsume: %s: warning: %s\n", rec.Profile, rec.Warning)
+	}
+	if !f.clipboard || f.jsonOut {
+		a.print(rec, false)
+	}
+	if f.clipboard {
+		if err := o.Clipboard(rec.URL); err != nil {
+			fmt.Fprintf(o.Stderr, "awsume: copy to clipboard: %v\n", err)
+		}
+	}
+	if f.open {
+		if err := o.Browser(rec.URL); err != nil {
+			fmt.Fprintf(o.Stderr, "awsume: open browser: %v\n", err)
+		}
+	}
+	return rec, ExitOK
+}
+
+// startBrowser launches the -auto-browser browser.
+func (a *app) startBrowser() (BrowserDriver, error) {
+	o, f := a.o, a.f
+	cfg := webdriver.Config{
+		Browser:      a.browser,
+		BinaryPath:   f.browserBinary,
+		ProfileDir:   browserProfileDir(a.browser, o.Env),
+		Proxy:        a.proxy,
+		Insecure:     f.insecure,
+		LookPath:     o.LookPath,
+		Logf:         a.logf,
+		StartTimeout: f.timeout,
+		Env:          o.environ,
+	}
+	switch a.browser {
+	case webdriver.Chrome:
+		cfg.DriverPath = f.chromedriver
+	case webdriver.Firefox:
+		cfg.DriverPath = f.geckodriver
+	}
+	if f.verbose {
+		cfg.DriverOutput = o.Stderr
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), f.timeout)
+	defer cancel()
+	drv, err := o.StartDriver(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("start %s: %w", a.browser, err)
+	}
+	return drv, nil
+}
+
+// sessionHooks lets the daemon follow a session's progress.
+type sessionHooks struct {
+	refreshed func()
+	noted     func(string)
+}
+
+// runSession opens login in drv and keeps the console session refreshed
+// until the browser is closed or ctx is cancelled, then quits the browser
+// and returns the exit code.
+func (a *app) runSession(ctx context.Context, drv BrowserDriver, name string, hosts []string, login autobrowser.Login, hooks sessionHooks) int {
+	o, f := a.o, a.f
+	sess := &autobrowser.Session{
+		Driver: drv,
+		Generate: func(ctx context.Context) (autobrowser.Login, error) {
+			rec, err := a.generate(ctx, name)
+			if err != nil {
+				return autobrowser.Login{}, err
+			}
+			return autobrowser.Login{URL: rec.URL, Expires: rec.expires}, nil
+		},
+		Interval: f.refresh,
+		Hosts:    hosts,
+		Logf:     a.logf,
+		Notify: func(format string, args ...any) {
+			msg := fmt.Sprintf(format, args...)
+			fmt.Fprintf(o.Stderr, "awsume: %s\n", msg)
+			if hooks.noted != nil {
+				hooks.noted(msg)
+			}
+		},
+		Now:         o.Now,
+		Poll:        o.browserPoll,
+		Sleep:       o.browserSleep,
+		CallTimeout: f.timeout,
+	}
+	if hooks.refreshed != nil {
+		sess.Refreshed = func(autobrowser.Login) { hooks.refreshed() }
+	}
+	err := sess.Run(ctx, login)
+	switch {
+	case errors.Is(err, autobrowser.ErrBrowserClosed):
+		fmt.Fprintln(o.Stderr, "awsume: browser closed")
+		_ = drv.Quit()
+		return ExitOK
+	case errors.Is(err, context.Canceled):
+		fmt.Fprintln(o.Stderr, "awsume: interrupted; closing the browser")
+		_ = drv.Quit()
+		return ExitOK
+	default:
+		fmt.Fprintf(o.Stderr, "awsume: %v\n", err)
+		_ = drv.Quit()
+		return ExitError
+	}
+}
+
+// autoBrowser generates the URL for name, opens it in the chosen browser
+// and keeps the console session refreshed until the browser is closed or
+// the process is interrupted.
+func (a *app) autoBrowser(name string) int {
+	o, f := a.o, a.f
+	rec, code := a.firstLogin(name)
+	if code != ExitOK {
+		return code
+	}
+	drv, err := a.startBrowser()
+	if err != nil {
+		fmt.Fprintf(o.Stderr, "awsume: %v\n", err)
+		return ExitError
+	}
+	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	fmt.Fprintf(o.Stderr, "awsume: %s is open; the console session is refreshed every %s. Close the browser or press Ctrl-C to stop.\n", a.browser, f.refresh)
+	fmt.Fprintln(o.Stderr, "awsume: hint: with the daemon running (awsume -daemon start) this command returns at once and the daemon keeps the browser going")
+	return a.runSession(sigCtx, drv, name, rec.hosts, autobrowser.Login{URL: rec.URL, Expires: rec.expires}, sessionHooks{})
 }

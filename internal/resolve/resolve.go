@@ -18,10 +18,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/confused-binary/awsume/internal/awsconfig"
-	"github.com/confused-binary/awsume/internal/awscreds"
-	"github.com/confused-binary/awsume/internal/endpoints"
-	"github.com/confused-binary/awsume/internal/sts"
+	"awsume/internal/awsconfig"
+	"awsume/internal/awscreds"
+	"awsume/internal/endpoints"
+	"awsume/internal/sts"
 )
 
 // Mode selects how credentials are resolved.
@@ -77,6 +77,15 @@ type Resolver struct {
 	LookPath func(file string) (string, error)
 	// UserAgent is sent on API calls.
 	UserAgent string
+	// SubprocessEnv is appended to the environment of credential_process
+	// and the AWS CLI, for example proxy variables.
+	SubprocessEnv []string
+	// Environ is the base environment of those subprocesses; nil means the
+	// environment of this process.
+	Environ []string
+	// DefaultSessionName is the RoleSessionName used when a profile does
+	// not set role_session_name; empty lets STS pick a unique one.
+	DefaultSessionName string
 }
 
 // SSOInfo describes an IAM Identity Center profile. It is populated even
@@ -383,7 +392,7 @@ func (r *Resolver) assumeRoleProfile(ctx context.Context, res *Result, visited m
 	stsRegion := firstNonEmpty(res.Region, source.Region)
 	in := sts.AssumeRoleInput{
 		RoleARN:         p.Get("role_arn"),
-		SessionName:     p.Get("role_session_name"),
+		SessionName:     firstNonEmpty(p.Get("role_session_name"), r.DefaultSessionName),
 		ExternalID:      p.Get("external_id"),
 		DurationSeconds: defaultAssumeRoleDuration,
 	}
@@ -439,7 +448,7 @@ func (r *Resolver) fromCredentialSource(ctx context.Context, source string) (*Re
 
 func (r *Resolver) webIdentityProfile(ctx context.Context, res *Result) (*Result, error) {
 	p := res.Profile
-	return r.webIdentity(ctx, res, p.Get("role_arn"), p.Get("web_identity_token_file"), p.Get("role_session_name"), p)
+	return r.webIdentity(ctx, res, p.Get("role_arn"), p.Get("web_identity_token_file"), firstNonEmpty(p.Get("role_session_name"), r.DefaultSessionName), p)
 }
 
 func (r *Resolver) webIdentity(ctx context.Context, res *Result, roleARN, tokenFile, sessionName string, p *awsconfig.Profile) (*Result, error) {

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/confused-binary/awsume/internal/awscreds"
+	"awsume/internal/awscreds"
 )
 
 var tempCreds = awscreds.Credentials{AccessKeyID: "ASIA", SecretAccessKey: "sk", SessionToken: "tok"}

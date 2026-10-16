@@ -1,3 +1,3 @@
-module github.com/confused-binary/awsume
+module awsume
 
 go 1.22
