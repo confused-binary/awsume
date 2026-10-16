@@ -29,7 +29,7 @@ Browser session (one profile only):
                              geckodriver and keep the session refreshed: a fresh sign-in is
                              applied inside the open console tab, with no new tab or window,
                              until the browser is closed or awsume is interrupted
-      -refresh <duration>    How often the session is refreshed (default 15m, minimum 1m)
+      -refresh <duration>    How often the session is refreshed (default 5m, minimum 1m)
       -chromedriver <path>   chromedriver executable (default: search PATH)
       -geckodriver <path>    geckodriver executable (default: search PATH)
       -browser-binary <path> Browser executable (default: the driver's choice)

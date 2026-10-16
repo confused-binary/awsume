@@ -255,7 +255,7 @@ func newFlagSet(f *flags, stderr io.Writer) *flag.FlagSet {
 	str(&f.proxy, "proxy", "", "")
 	boolean(&f.insecure, "insecure", "k")
 	str(&f.autoBrowser, "auto-browser", "ab", "")
-	fs.DurationVar(&f.refresh, "refresh", 15*time.Minute, "")
+	fs.DurationVar(&f.refresh, "refresh", 5*time.Minute, "")
 	str(&f.chromedriver, "chromedriver", "", "")
 	str(&f.geckodriver, "geckodriver", "", "")
 	str(&f.browserBinary, "browser-binary", "", "")
